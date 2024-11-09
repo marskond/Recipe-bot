@@ -5,9 +5,9 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from datetime import datetime, timedelta
 
-# Замените 'YOUR_TELEGRAM_BOT_TOKEN' и 'YOUR_SPOONACULAR_API_KEY' на свои ключи
-TELEGRAM_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN'
-SPOONACULAR_API_KEY = 'YOUR_SPOONACULAR_API_KEY'
+
+TELEGRAM_TOKEN = '7793938959:AAFcCJyvsMAUtr5zDCK2khs6aMqACrSPguY'
+SPOONACULAR_API_KEY = '12313f8e74ba4d3b93ad2980f3135c75'
 SPOONACULAR_URL = 'https://api.spoonacular.com/recipes/findByIngredients'
 
 # Функция для поиска рецептов по ингредиентам
