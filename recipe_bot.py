@@ -1,167 +1,137 @@
-import sqlite3
 import os
+import sqlite3
 import requests
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from datetime import datetime, timedelta
 
+# Замените 'YOUR_TELEGRAM_BOT_TOKEN' и 'YOUR_SPOONACULAR_API_KEY' на свои ключи
+TELEGRAM_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN'
+SPOONACULAR_API_KEY = 'YOUR_SPOONACULAR_API_KEY'
+SPOONACULAR_URL = 'https://api.spoonacular.com/recipes/findByIngredients'
 
-SPOONACULAR_API_KEY = "12313f8e74ba4d3b93ad2980f3135c75"
-SPOONACULAR_API_URL = "https://api.spoonacular.com/recipes/complexSearch"
-
-# Создание подключения к базе данных
-def setup_database():
-    conn = sqlite3.connect('recipes.db')
-    cursor = conn.cursor()
-    
-    # Таблица для избранных рецептов с заметками
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS saved_recipes (
-            user_id INTEGER,
-            recipe_id INTEGER,
-            title TEXT,
-            link TEXT,
-            note TEXT,
-            UNIQUE(user_id, recipe_id)
-        )
-    ''')
-    
-    # Таблица для рейтингов рецептов
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS recipe_ratings (
-            user_id INTEGER,
-            recipe_id INTEGER,
-            rating INTEGER,
-            UNIQUE(user_id, recipe_id)
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-
-# Функция для поиска рецептов через Spoonacular API
-def find_recipes(ingredients="", category=None, calories=None):
+# Функция для поиска рецептов по ингредиентам
+def find_recipes(ingredients, num_results=5):
     params = {
-        "apiKey": SPOONACULAR_API_KEY,
-        "query": ingredients,
-        "type": category,
-        "maxCalories": calories,
-        "number": 5  # Количество рецептов для возврата
+        'apiKey': SPOONACULAR_API_KEY,
+        'ingredients': ingredients,
+        'number': num_results,
+        'ranking': 1
     }
+    response = requests.get(SPOONACULAR_URL, params=params)
+    return response.json()
 
-    response = requests.get(SPOONACULAR_API_URL, params=params)
-    
-    if response.status_code == 200:
-        recipes = response.json().get('results', [])
-        return [{"id": recipe["id"], "title": recipe["title"], "link": f"https://spoonacular.com/recipes/{recipe['title'].replace(' ', '-')}-{recipe['id']}"} for recipe in recipes]
-    else:
-        return []
+# Функция для добавления рецепта в базу данных
+def save_recipe_to_db(user_id, recipe_id, title, link):
+    conn = sqlite3.connect('recipes.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT OR IGNORE INTO saved_recipes (user_id, recipe_id, title, link)
+        VALUES (?, ?, ?, ?)
+    ''', (user_id, recipe_id, title, link))
+    conn.commit()
+    conn.close()
 
-# Функция для фильтрации по категории
-async def filter_by_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    categories = ['Breakfast', 'Lunch', 'Dinner', 'Dessert']
-    keyboard = [[category] for category in categories]
-    
+# Функция для получения сохранённых рецептов
+def get_saved_recipes(user_id):
+    conn = sqlite3.connect('recipes.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT title, link FROM saved_recipes WHERE user_id = ?', (user_id,))
+    recipes = cursor.fetchall()
+    conn.close()
+    return recipes
+
+# Обработчик команды /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Choose a category:",
-        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+        "Hello! I can help you find recipes by ingredients. "
+        "Just send me a list of ingredients separated by commas.\n\n"
+        "Commands:\n"
+        "/saved - View saved recipes\n"
+        "/recommend - Get daily recipe recommendations"
     )
 
-async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    category = update.message.text
-    recipes = find_recipes(category=category)
-    
-    if recipes:
-        await update.message.reply_text(f"Recipes for {category}:")
-        for recipe in recipes:
-            recipe_title = recipe['title']
-            recipe_link = recipe['link']
-            await update.message.reply_text(f"{recipe_title}\n{recipe_link}")
+# Обработчик команды /saved для отображения сохранённых рецептов
+async def view_saved(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    saved_recipes = get_saved_recipes(user_id)
+
+    if not saved_recipes:
+        await update.message.reply_text("You have no saved recipes.")
     else:
-        await update.message.reply_text(f"No recipes found for {category}.")
+        message = "Your saved recipes:\n\n"
+        for title, link in saved_recipes:
+            message += f"• [{title}]({link})\n"
+        await update.message.reply_text(message, parse_mode='Markdown')
 
-# Функция для фильтрации по калорийности
-async def filter_by_calories(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) != 1:
-        await update.message.reply_text("Please specify the calorie limit. Example: /calories 500")
-        return
-    
-    try:
-        calorie_limit = int(context.args[0])
-        recipes = find_recipes(calories=calorie_limit)
-        
-        if recipes:
-            await update.message.reply_text(f"Recipes under {calorie_limit} calories:")
-            for recipe in recipes:
-                recipe_title = recipe['title']
-                recipe_link = recipe['link']
-                await update.message.reply_text(f"{recipe_title}\n{recipe_link}")
-        else:
-            await update.message.reply_text("No recipes found within that calorie range.")
-    
-    except ValueError:
-        await update.message.reply_text("Invalid input. Please enter a number.")
+# Обработчик команды /recommend для ежедневных рекомендаций
+async def recommend_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Для демонстрации мы используем заранее определённый список ингредиентов для рекомендации
+    recommended_ingredients = "chicken, rice, tomato"
+    recipes = find_recipes(recommended_ingredients, num_results=1)
 
-# Функция для добавления заметки к рецепту
-async def add_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 2:
-        await update.message.reply_text("Usage: /note <recipe_id> <note>")
-        return
-    
-    recipe_id = context.args[0]
-    note = " ".join(context.args[1:])
-    user_id = update.message.from_user.id
-    
-    conn = sqlite3.connect('recipes.db')
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT OR REPLACE INTO saved_recipes (user_id, recipe_id, title, link, note) VALUES (?, ?, ?, ?, ?)",
-        (user_id, recipe_id, "Sample Title", "Sample Link", note)
-    )
-    conn.commit()
-    conn.close()
-    await update.message.reply_text("Note saved successfully.")
+    if recipes:
+        recipe = recipes[0]
+        recipe_title = recipe['title']
+        recipe_id = recipe['id']
+        recipe_link = f"https://spoonacular.com/recipes/{recipe_title.replace(' ', '-')}-{recipe_id}"
+        await update.message.reply_text(
+            f"Today's recommended recipe:\n\n*{recipe_title}*\n[View Recipe]({recipe_link})",
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text("No recommendations available at the moment.")
 
-# Функция для списка покупок
-async def shopping_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    recipe_id = context.args[0] if context.args else None
-    ingredients = ["Sample Ingredient 1", "Sample Ingredient 2"]  # Здесь должен быть реальный список ингредиентов
-    
-    await update.message.reply_text("Shopping List:\n" + "\n".join(ingredients))
+# Обработчик текстовых сообщений с ингредиентами
+async def handle_ingredients(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ingredients = update.message.text
+    await update.message.reply_text("Searching for recipes, please wait...")
+    recipes = find_recipes(ingredients)
 
-# Функция для рейтинга рецептов
-async def rate_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) != 2:
-        await update.message.reply_text("Usage: /rate <recipe_id> <rating>")
+    if not recipes:
+        await update.message.reply_text("No recipes found.")
         return
 
-    recipe_id = context.args[0]
-    rating = int(context.args[1])
-    user_id = update.message.from_user.id
-    
-    conn = sqlite3.connect('recipes.db')
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT OR REPLACE INTO recipe_ratings (user_id, recipe_id, rating) VALUES (?, ?, ?)",
-        (user_id, recipe_id, rating)
-    )
-    conn.commit()
-    conn.close()
-    await update.message.reply_text("Rating saved successfully.")
+    # Отправка рецептов пользователю
+    for recipe in recipes:
+        recipe_title = recipe['title']
+        recipe_id = recipe['id']
+        recipe_link = f"https://spoonacular.com/recipes/{recipe_title.replace(' ', '-')}-{recipe_id}"
+        keyboard = [
+            [InlineKeyboardButton("Save Recipe", callback_data=f"save_{recipe_id}_{recipe_title}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-# Главная функция запуска бота
+        await update.message.reply_text(
+            f"*{recipe_title}*\n[View Recipe]({recipe_link})",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+# Обработчик для сохранения рецепта
+async def save_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data.split('_')
+    recipe_id = data[1]
+    recipe_title = data[2]
+    user_id = query.from_user.id
+    recipe_link = f"https://spoonacular.com/recipes/{recipe_title.replace(' ', '-')}-{recipe_id}"
+    
+    save_recipe_to_db(user_id, recipe_id, recipe_title, recipe_link)
+    await query.answer("Recipe saved!")
+    await query.edit_message_text(text=f"{recipe_title} saved to your recipes!")
+
+# Основная функция для запуска бота
 def main():
-    setup_database()
-    application = ApplicationBuilder().token("7793938959:AAFcCJyvsMAUtr5zDCK2khs6aMqACrSPguY").build()
-    
-    # Добавление обработчиков команд
-    application.add_handler(CommandHandler("filter", filter_by_category))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category_selection))
-    application.add_handler(CommandHandler("calories", filter_by_calories))
-    application.add_handler(CommandHandler("note", add_note))
-    application.add_handler(CommandHandler("shopping_list", shopping_list))
-    application.add_handler(CommandHandler("rate", rate_recipe))
-    
-    # Запуск бота
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("saved", view_saved))
+    application.add_handler(CommandHandler("recommend", recommend_recipe))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ingredients))
+    application.add_handler(CallbackQueryHandler(save_recipe, pattern="^save_"))
+
+    print("Bot is running...")
     application.run_polling()
 
 if __name__ == "__main__":
